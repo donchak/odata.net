@@ -292,6 +292,13 @@ namespace Microsoft.OData.Edm.Validation
             new ValidationRule<IEdmNavigationSource>(
                 (context, navigationSource) =>
                 {
+                    // Entity types used in Singletons don't require keys
+                    if (navigationSource.NavigationSourceKind() == EdmNavigationSourceKind.Singleton
+                        || navigationSource.NavigationSourceKind() == EdmNavigationSourceKind.None)
+                    {
+                        return;
+                    }
+
                     IEdmEntityType entityType = navigationSource.EntityType();
 
                     if (entityType == null)
@@ -1903,7 +1910,8 @@ namespace Microsoft.OData.Edm.Validation
                     if (elementType.Definition == EdmCoreModelComplexType.Instance ||
                         elementType.Definition == EdmCoreModel.Instance.GetPrimitiveType())
                     {
-                        context.AddError(operation.Location(),
+                        context.AddError(
+                            operation.Location(),
                             EdmErrorCode.OperationWithCollectionOfAbstractReturnTypeInvalid,
                             Strings.EdmModel_Validator_Semantic_OperationReturnTypeCannotBeCollectionOfAbstractType(operation.ReturnType.FullName(), operation.FullName()));
                     }
@@ -2589,7 +2597,7 @@ namespace Microsoft.OData.Edm.Validation
                 (context, annotatable) =>
                 {
                     HashSetInternal<string> annotationSet = new HashSetInternal<string>();
-                    foreach (IEdmVocabularyAnnotation annotation in annotatable.VocabularyAnnotations(context.Model))
+                    foreach (IEdmVocabularyAnnotation annotation in context.Model.FindDeclaredVocabularyAnnotations(annotatable))
                     {
                         if (!annotationSet.Add(annotation.Term.FullName() + ":" + annotation.Qualifier))
                         {

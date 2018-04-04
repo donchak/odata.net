@@ -13,6 +13,8 @@ using FluentAssertions;
 using Microsoft.OData.Edm.Csdl;
 using Microsoft.OData.Edm.Csdl.CsdlSemantics;
 using Microsoft.OData.Edm.Validation;
+using Microsoft.OData.Edm.Vocabularies;
+using Microsoft.OData.Edm.Vocabularies.V1;
 using Xunit;
 using ErrorStrings = Microsoft.OData.Edm.Strings;
 
@@ -160,6 +162,101 @@ namespace Microsoft.OData.Edm.Tests.Csdl
             var model = CsdlReader.Parse(XElement.Parse(csdl).CreateReader());
             var setA = model.FindDeclaredNavigationSource("SetA");
             Assert.True(setA.NavigationPropertyBindings.First().NavigationProperty is UnresolvedNavigationPropertyPath);
+        }
+
+        [Fact]
+        public void ValidateNavigationPropertyBindingPathTraversesContainmentNavigationProperties()
+        {
+            var csdl
+                = "<?xml version=\"1.0\" encoding=\"utf-16\"?>" +
+                    "<edmx:Edmx Version=\"4.0\" xmlns:edmx=\"http://docs.oasis-open.org/odata/ns/edmx\">" +
+                      "<edmx:DataServices>" +
+                        "<Schema Namespace=\"NS\" xmlns=\"http://docs.oasis-open.org/odata/ns/edm\">" +
+                          "<EntityType Name=\"RootEntity\">" +
+                            "<NavigationProperty Name=\"SetA\" Type=\"Collection(NS.EntityA)\" ContainsTarget=\"true\" />" +
+                            "<NavigationProperty Name=\"SetB\" Type=\"Collection(NS.EntityB)\" ContainsTarget=\"true\" />" +
+                          "</EntityType>" +
+                          "<EntityType Name=\"EntityA\">" +
+                            "<NavigationProperty Name=\"EntityAToB\" Type=\"Collection(NS.EntityB)\" />" +
+                          "</EntityType>" +
+                          "<EntityType Name=\"EntityB\"/>" +
+                          "<EntityContainer Name=\"Container\">" +
+                            "<Singleton Name=\"Root\" Type=\"NS.RootEntity\">" +
+                              "<NavigationPropertyBinding Path=\"EntityA/EntityAToB\" Target=\"Root/SetB\" />" +
+                            "</Singleton>" +
+                          "</EntityContainer>" +
+                        "</Schema>" +
+                      "</edmx:DataServices>" +
+                    "</edmx:Edmx>";
+            var model = CsdlReader.Parse(XElement.Parse(csdl).CreateReader());
+            var setA = model.FindDeclaredNavigationSource("Root");
+            var target = setA.NavigationPropertyBindings.First().Target;
+            Assert.True(target is IEdmContainedEntitySet);
+            target.Name.Should().Be("SetB");
+            var targetSegments = target.Path.PathSegments.ToList();
+            targetSegments.Count().Should().Be(2);
+            targetSegments[0].Should().Be("Root");
+            targetSegments[1].Should().Be("SetB");
+            var pathSegments = setA.NavigationPropertyBindings.First().Path.PathSegments.ToList();
+            pathSegments.Count().Should().Be(2);
+            pathSegments[0].Should().Be("EntityA");
+            pathSegments[1].Should().Be("EntityAToB");
+        }
+
+        [Fact]
+        public void ValidateEducationModel()
+        {
+            var csdl
+                = "<edmx:Edmx Version=\"4.0\" xmlns:edmx=\"http://docs.oasis-open.org/odata/ns/edmx\">" +
+                  "  <edmx:DataServices>" +
+                  "    <Schema Namespace=\"Test.NS\" xmlns=\"http://docs.oasis-open.org/odata/ns/edm\">" +
+                  "      <EntityType Name=\"educationRoot\">" +
+                  "        <NavigationProperty Name=\"classes\" Type=\"Collection(Test.NS.class)\" ContainsTarget=\"true\"/>" +
+                  "        <NavigationProperty Name=\"users\" Type=\"Collection(Test.NS.user)\" ContainsTarget=\"true\"/>" +
+                  "      </EntityType>" +
+                  "      <EntityType Name=\"user\">" +
+                  "        <Key><PropertyRef Name=\"name\"/></Key>" +
+                  "        <Property Name =\"name\" Type=\"Edm.String\" Nullable=\"False\"/>" +
+                  "        <NavigationProperty Name=\"classes\" Type=\"Collection(Test.NS.class)\"/>" +
+                  "      </EntityType>" +
+                  "      <EntityType Name=\"class\">" +
+                  "        <Key><PropertyRef Name=\"classNumber\"/></Key>" +
+                  "        <Property Name=\"classNumber\" Type=\"Edm.String\" Nullable=\"False\"/>" +
+                  "        <Property Name=\"displayName\" Type=\"Edm.String\"/>" +
+                  "        <Property Name=\"description\" Type=\"Edm.String\"/>" +
+                  "        <Property Name=\"period\" Type=\"Edm.String\"/>" +
+                  "        <NavigationProperty Name=\"members\" Type=\"Collection(Test.NS.user)\"/>" +
+                  "      </EntityType>" +
+                  "      <EntityContainer Name=\"EducationService\">" +
+                  "        <Singleton Name=\"education\" Type=\"Test.NS.educationRoot\">" +
+                  "          <NavigationPropertyBinding Path=\"classes/members\" Target=\"education/users\" />" +
+                  "        </Singleton>" +
+                  "      </EntityContainer>" +
+                  "    </Schema>" +
+                  "  </edmx:DataServices>" +
+                  "</edmx:Edmx>";
+
+            IEdmModel model;
+            IEnumerable<EdmError> errors;
+            CsdlReader.TryParse(XElement.Parse(csdl).CreateReader(), out model, out errors).Should().BeTrue();
+            errors.Count().Should().Be(0);
+            model.Validate(out errors);
+            errors.Count().Should().Be(0);
+
+            var educationSingleton = model.FindDeclaredNavigationSource("education");
+            var navPropBinding = educationSingleton.NavigationPropertyBindings.First();
+            var target = navPropBinding.Target;
+            target.Should().NotBeNull();
+            Assert.True(target is IEdmContainedEntitySet);
+            target.Name.Should().Be("users");
+            var targetSegments = target.Path.PathSegments.ToList();
+            targetSegments.Count().Should().Be(2);
+            targetSegments[0].Should().Be("education");
+            targetSegments[1].Should().Be("users");
+            var pathSegments = navPropBinding.Path.PathSegments.ToList();
+            pathSegments.Count().Should().Be(2);
+            pathSegments[0].Should().Be("classes");
+            pathSegments[1].Should().Be("members");
         }
 
         [Fact]
@@ -605,6 +702,84 @@ namespace Microsoft.OData.Edm.Tests.Csdl
   </edmx:DataServices>
 </edmx:Edmx>";
             string modelText = string.Format(template, types, properties);
+
+            IEdmModel model;
+            IEnumerable<EdmError> errors;
+
+            bool result = CsdlReader.TryParse(XElement.Parse(modelText).CreateReader(), out model, out errors);
+            Assert.True(result);
+            return model;
+        }
+
+        [Fact]
+        public void ParsingBaseAndDerivedTypeWithSameAnnotationWorksButValidationSuccessful()
+        {
+            string annotations =@"
+            <Annotations Target=""NS.Base"">
+                <Annotation Term=""Org.OData.Core.V1.Description"" String=""Base description"" />
+            </Annotations>
+            <Annotations Target=""NS.Derived"">
+                <Annotation Term=""Org.OData.Core.V1.Description"" String=""Derived description"" />
+            </Annotations>";
+
+            IEdmModel model = GetInheritanceEdmModel(annotations);
+
+            var edmType = model.SchemaElements.OfType<IEdmEntityType>().FirstOrDefault(c => c.Name == "Base");
+            Assert.NotNull(edmType);
+            Assert.Equal("Base description", model.GetDescriptionAnnotation(edmType));
+
+            edmType = model.SchemaElements.OfType<IEdmEntityType>().FirstOrDefault(c => c.Name == "Derived");
+            Assert.NotNull(edmType);
+            Assert.Equal("Derived description", model.GetDescriptionAnnotation(edmType));
+
+            IEnumerable<EdmError> errors;
+            Assert.True(model.Validate(out errors));
+        }
+
+        [Fact]
+        public void ParsingDerivedTypeWithDuplicatedAnnotationsWorksButValidationFailed()
+        {
+            string annotations = @"
+            <Annotations Target=""NS.Derived"">
+                <Annotation Term=""Org.OData.Core.V1.Description"" String=""Derived description 1"" />
+            </Annotations>
+            <Annotations Target=""NS.Derived"">
+                <Annotation Term=""Org.OData.Core.V1.Description"" String=""Derived description 2"" />
+            </Annotations>";
+
+            IEdmModel model = GetInheritanceEdmModel(annotations);
+
+            var edmType = model.SchemaElements.OfType<IEdmEntityType>().FirstOrDefault(c => c.Name == "Derived");
+            Assert.NotNull(edmType);
+            var descriptions = model.FindVocabularyAnnotations<IEdmVocabularyAnnotation>(edmType, CoreVocabularyModel.DescriptionTerm);
+            Assert.Equal(new [] { "Derived description 1", "Derived description 2" },
+                descriptions.Select(d => d.Value as IEdmStringConstantExpression).Select(e => e.Value));
+
+            IEnumerable<EdmError> errors;
+            Assert.False(model.Validate(out errors));
+            EdmError error = Assert.Single(errors);
+            Assert.NotNull(error);
+            Assert.Equal(EdmErrorCode.DuplicateAnnotation, error.ErrorCode);
+            Assert.Equal("The annotated element 'NS.Derived' has multiple annotations with the term 'Org.OData.Core.V1.Description' and the qualifier ''.", error.ErrorMessage);
+        }
+
+        private static IEdmModel GetInheritanceEdmModel(string annotation)
+        {
+            const string template = @"<edmx:Edmx Version=""4.0"" xmlns:edmx=""http://docs.oasis-open.org/odata/ns/edmx"">
+  <edmx:DataServices>
+    <Schema Namespace=""NS"" xmlns=""http://docs.oasis-open.org/odata/ns/edm"">
+      <EntityType Name=""Base"">
+        <Key>
+          <PropertyRef Name=""ID"" />
+        </Key>
+        <Property Name=""ID"" Type=""Edm.Int32"" Nullable=""false"" />
+      </EntityType>
+      <EntityType Name=""Derived"" BaseType=""NS.Base"" />
+      {0}
+    </Schema>
+  </edmx:DataServices>
+</edmx:Edmx>";
+            string modelText = string.Format(template, annotation);
 
             IEdmModel model;
             IEnumerable<EdmError> errors;
